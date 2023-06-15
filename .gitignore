@@ -1,0 +1,55 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# pyenv
+.python-version
+
+# Environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# Spyder project settings
+.spyderproject
+.spyproject
+
+# Rope project settings
+.ropeproject
+
+# mkdocs documentation
+/site
+
+# mypy
+.mypy_cache/
+
+# pycharm
+.idea/
+
+# tests
+maglimits_test.py
+
+
+# osx ds_store
+.DS_Store
+
+# vscode
+.vscode
+
+# logger
+*.log
+
+# scala worksheet for some OCS comparison
+.metals
+
+# processed weather data
+data/g[ns]_weather_data.pickle.bz2
