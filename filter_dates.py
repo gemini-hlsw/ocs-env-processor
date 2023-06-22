@@ -1,17 +1,24 @@
+# Copyright (c) 2016-2023 Association of Universities for Research in Astronomy, Inc. (AURA)
+# For license information see LICENSE or https://opensource.org/licenses/BSD-3-Clause
+
 import bz2
-from datetime import datetime
+import os
 import pandas as pd
 from lucupy.minimodel import Site
-import os
 
-start_date = datetime(2018, 1, 31, 12, 0)
-end_date = datetime(2019, 8, 2, 12, 0)
+from definitions import *
 
 
 def filter_dates(site: Site, input_file_name: str, output_file_name: str) -> None:
+    """
+    Filters the data for the specified site, as given in the input_file_name.
+    Data with dates outside the start_date and end_date are dropped, as well are unnecessary columns that we do
+    not need in our final calculations. This reduces the size of the pandas dataframes and files significantly so
+    that only essential data are kept, which allows env_processor.py to run much more quickly.
+    """
     with bz2.BZ2File(input_file_name, 'rb') as input_file:
-        input_data = pd.read_pickle(input_file)
-        input_data = input_data.drop(columns={
+        df = pd.read_pickle(input_file)
+        df = df.drop(columns={
             'Night', f'{site.name}_Sun_Elevation', 'cc_requested', 'iq_requested',
             'Airmass_QAP', 'Filter', 'Instrument', 'Object', 'Sidereal', 'Filename_QAP', 'Types',
             'adaptive_optics', 'calibration_program', 'cass_rotator_pa', 'data_label', 'dec',
@@ -23,14 +30,29 @@ def filter_dates(site: Site, input_file_name: str, output_file_name: str) -> Non
             'IQ_P2WFS_MEDIAN_Zenith', 'QAP_IQ_WFS_scaled500_Zenith',
             'filter_name', 'instrument'})
 
-        input_data['Time_Stamp_UTC'] = pd.to_datetime(input_data['Time_Stamp_UTC'])
-        filtered_df = input_data[(input_data['Time_Stamp_UTC'] >= start_date) & (input_data['Time_Stamp_UTC'] <= end_date)]
+        df[time_stamp_col] = pd.to_datetime(df[time_stamp_col])
+        filtered_df = df[(df[time_stamp_col] >= first_date) & (df[time_stamp_col] <= last_date)]
         filtered_df.to_pickle(output_file_name, compression='bz2')
 
 
 def main():
-    filter_dates(Site.GN, os.path.join('data', 'gn_wfs_filled_final_MEDIAN600s.pickle.bz2'), os.path.join('data', 'gn_filtered.pickle.bz2'))
-    filter_dates(Site.GS, os.path.join('data', 'gs_wfs_filled_final_MEDIAN600s.pickle.bz2'), os.path.join('data', 'gs_filtered.pickle.bz2'))
+    sites = (
+        Site.GN,
+        Site.GS,
+    )
+    in_files = [os.path.join('data', f)
+                for f in (
+                    'gn_wfs_filled_final_MEDIAN600s.pickle.bz2',
+                    'gs_wfs_filled_final_MEDIAN600s.pickle.bz2',
+                )]
+    out_files = [os.path.join('data', f)
+                 for f in (
+                     'gn_filtered.pickle.bz2',
+                     'gs_filtered.pickle.bz2',
+                 )]
+
+    for site, in_file, out_file in zip(sites, in_files, out_files):
+        filter_dates(site, in_file, out_file)
 
 
 if __name__ == '__main__':
