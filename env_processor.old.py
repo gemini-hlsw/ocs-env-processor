@@ -18,7 +18,7 @@ import numpy.typing as npt
 import pandas as pd
 import pytz
 from astropy.coordinates import Angle
-from lucupy.helpers import lerp_enum, round_minute
+from lucupy.helpers import lerp, lerp_enum, lerp_radians, round_minute
 from lucupy.minimodel import Site, Variant, CloudCover, ImageQuality
 from lucupy.sky import night_events
 
@@ -42,12 +42,21 @@ _first_date = datetime(2018, 1, 31, 12, 0)
 _last_date = datetime(2019, 8, 2, 12, 0)
 
 
-def lerp(start_value: float, end_value: float, n: int) -> npt.NDArray[float]:
-    return np.linspace(start_value, end_value, n + 2)[1:-1]
+def cc_band_to_float(data: str | float) -> float:
+    """
+    Convert a CC value from a str or float to a value in the enum.
+    CC values in the pandas dataset are generally 100 times the value in the CloudCover enum.
+    """
+    # If it is not a number, return CCANY.
+    if pd.isna(data):
+        return 1.0
 
+    # If it is a str, then it might be a set. If it is a set, eval it to get the set, and return the max.
+    if type(data) == str and '{' in data:
+        return max(eval(data)) / 100
 
-def convert_to_datetime(ts_list):
-    return [ts.to_pydatetime() for ts in ts_list]
+    # Otherwise, it is a float, so return the value divided by 100.
+    return float(data) / 100
 
 
 def process_files(site: Site, input_file_name: str, output_file_name: str) -> None:
@@ -107,8 +116,8 @@ def process_files(site: Site, input_file_name: str, output_file_name: str) -> No
         empty_row = copy(input_frame.iloc[0])
         empty_row[_iq_band] = 1.0
         empty_row[_cc_band] = 1.0
-        empty_row[_wind_speed] = 1.0
-        empty_row[_wind_dir] = 1.0
+        empty_row[_wind_speed] = 0.0
+        empty_row[_wind_dir] = 0.0
 
         # Store the data by night.
         data_by_night = {}
@@ -151,7 +160,9 @@ def process_files(site: Site, input_file_name: str, output_file_name: str) -> No
                       f'time slots filled: {len(data_by_night[curr_date])}')
                 continue
 
+            # *** REGULAR CASE: Some data for date. ***
             print(f'Adding data for {curr_date}...')
+            prev_row = None
 
             # Fill in any missing data at beginning of night.
             pd_first_time_in_frame = night_input_frame.iloc[0][_time_stamp]
@@ -160,15 +171,51 @@ def process_files(site: Site, input_file_name: str, output_file_name: str) -> No
                 new_row[_time_stamp] = pd_curr_time
                 night_rows.append(new_row)
                 pd_curr_time += pd_minute
+                prev_row = new_row
 
             # Iterate over the rows.
-            for idx, pd_row in night_input_frame.iterrows():
-                pd_curr_time = pd_row[_time_stamp]
-                night_rows.append(pd_row)
+            for idx, curr_row in night_input_frame.iterrows():
+                # Adjust the values in pd_row to be standardized and to eliminate nan.
+                curr_row[_cc_band] = cc_band_to_float(curr_row[_cc_band])
+                curr_row[_iq_band] = 1.0 if pd.isna(curr_row[_iq_band]) else curr_row[_iq_band] / 100
+                if pd.isna(curr_row[_wind_dir]): curr_row[_wind_dir] = 0.0
+                if pd.isna(curr_row[_wind_speed]): curr_row[_wind_speed] = 0.0
+
+                # Get the timestamp for the current row and determine if there is missing data.
+                pd_next_time = curr_row[_time_stamp]
+                gaps = int((pd_next_time - pd_curr_time).total_seconds() / 60 - 1)
+
+                # Fill in any gaps between the prev_row and the curr_row with linear interpolation.
+                if gaps > 0:
+                    print(f'Interpolating CloudCover between {prev_row[_cc_band]} and {curr_row[_cc_band]} for {gaps}.')
+                    cc = lerp_enum(CloudCover, prev_row[_cc_band], curr_row[_cc_band], gaps)
+                    print(f'Complete: {cc}')
+                    print(f'Interpolating ImageQuality between {prev_row[_cc_band]} and {curr_row[_cc_band]} for {gaps}.')
+                    iq = lerp_enum(ImageQuality, prev_row[_iq_band], curr_row[_iq_band], gaps)
+                    print(f'Complete: {iq}')
+                    wind_dir = lerp_radians(prev_row[_wind_dir], curr_row[_wind_dir], gaps)
+                    wind_speed = lerp(prev_row[_wind_speed], curr_row[_wind_speed], gaps)
+
+                    ii = 0
+                    while pd_curr_time < pd_next_time:
+                        new_row = copy(empty_row)
+                        new_row[_time_stamp] = pd_curr_time
+                        new_row[_cc_band] = cc[ii]
+                        new_row[_iq_band] = iq[ii]
+                        new_row[wind_dir] = wind_dir[ii]
+                        new_row[_wind_speed] = wind_speed[ii]
+                        night_rows.append(new_row)
+                        ii += 1
+                        pd_curr_time += pd_minute
+
+                # Add the current row and designate it to the prev_row.
+                night_rows.append(curr_row)
+                prev_row = curr_row
 
             # Advance to the next minute and fill in any missing data.
             pd_curr_time += pd_minute
-            while pd_curr_time <= pd_end_time:
+
+            while pd_curr_time < pd_end_time:
                 new_row = copy(empty_row)
                 new_row[_time_stamp] = pd_curr_time
                 night_rows.append(new_row)
