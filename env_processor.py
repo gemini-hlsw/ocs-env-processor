@@ -215,8 +215,8 @@ def main():
         'gs_filtered.pickle.bz2',
     )]
     out_files = [os.path.join('data', f) for f in (
-        'gn_weather_data.bz2',
-        'gs_weather_data.bz2',
+        'gn_weather_data.pickle.bz2',
+        'gs_weather_data.pickle.bz2',
     )]
 
     for site, in_file, out_file in zip(sites, in_files, out_files):
