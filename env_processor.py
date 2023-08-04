@@ -4,9 +4,10 @@
 import bz2
 import os
 from copy import copy
+from enum import Enum
 import logging
 from tqdm import tqdm
-from typing import Optional
+from typing import List, Optional, Type
 
 from astropy.time import Time
 from astropy import units as u
@@ -18,8 +19,15 @@ from lucupy.sky import night_events
 
 from definitions import *
 
+logger = logging.getLogger(__name__)
+handler = logging.StreamHandler()
+formatter = logging.Formatter('%(levelname)s - %(message)s')
+handler.setFormatter(formatter)
+logger.addHandler(handler)
+logger.setLevel(logging.INFO)
 
-def cc_band_to_float(data: str | float) -> Optional[float]:
+
+def val_to_float(data: str | float) -> Optional[float]:
     """
     Convert a CC value from a str or float to a value in the enum.
     CC values in the pandas dataset are generally 100 times the value in the CloudCover enum.
@@ -30,10 +38,76 @@ def cc_band_to_float(data: str | float) -> Optional[float]:
 
     # If it is a str, then it might be a set. If it is a set, eval it to get the set, and return the max.
     if type(data) == str and "{" in data:
-        return max(eval(data)) / 100
+        s = eval(data)
+        value = max(s) / 100
+        if len(s) > 1:
+            logger.warning(f'Collapsing CC {s} to {value}')
+        return value
 
     # Otherwise, it is a float, so return the value divided by 100.
     return float(data) / 100
+
+
+def clean_gaps(night_rows: List, column_name: str, enum: Type[Enum]) -> None:
+    """
+    Given a set of rows and a column, collect all the na entries from the rows in that column.
+    Then perform a discrete linear interpolation to fill them in.
+    """
+    if pd.isna(night_rows[0][column_name]):
+        night_rows[0][column_name] = 1.0
+    if pd.isna(night_rows[-1][column_name]):
+        night_rows[-1][column_name] = 1.0
+
+    prev_row = None
+    row_block = []
+    for curr_row in night_rows:
+        if prev_row is None:
+            prev_row = curr_row
+            continue
+
+        # If we have an na value, append to the row block for processing.
+        # Otherwise, process the row block and fill with the linear interpolation.
+        if pd.isna(curr_row[column_name]):
+            row_block.append(curr_row)
+        else:
+            if len(row_block) > 0:
+                # Perform the linear interpolation and fill in the values.
+                lerp_entries = lerp_enum(enum, prev_row[column_name], curr_row[column_name], len(row_block))
+                for row, value in zip(row_block, lerp_entries):
+                    row[column_name] = value
+                row_block = []
+            prev_row = curr_row
+
+
+def clean_lerp_gaps(night_rows: List, column_name: str) -> None:
+    """
+    Given a set of rows and a column, collect all the na entries from the rows in that column.
+    Then perform a discrete linear interpolation to fill them in.
+    """
+    if pd.isna(night_rows[0][column_name]):
+        night_rows[0][column_name] = 0.0
+    if pd.isna(night_rows[-1][column_name]):
+        night_rows[-1][column_name] = 0.0
+
+    prev_row = None
+    row_block = []
+    for curr_row in night_rows:
+        if prev_row is None:
+            prev_row = curr_row
+            continue
+
+        # If we have an na value, append to the row block for processing.
+        # Otherwise, process the row block and fill with the linear interpolation.
+        if pd.isna(curr_row[column_name]):
+            row_block.append(curr_row)
+        else:
+            if len(row_block) > 0:
+                # Perform the linear interpolation and fill in the values.
+                lerp_entries = lerp(prev_row[column_name], curr_row[column_name], len(row_block))
+                for row, value in zip(row_block, lerp_entries):
+                    row[column_name] = value
+                row_block = []
+            prev_row = curr_row
 
 
 def process_files(site: Site, input_file_name: str, output_file_name: str) -> None:
@@ -42,7 +116,7 @@ def process_files(site: Site, input_file_name: str, output_file_name: str) -> No
     For any missing values at the beginning or end of the night, insert ANY.
     For any missing internal values, linearly interpolate between the enum values.
     """
-    print(f"*** Processing site: {site.name} ***")
+    logger.info(f"*** Processing site: {site.name} ***")
     # Create the time grid for the site.
     start_time = Time(first_date)
     end_time = Time(last_date)
@@ -103,8 +177,6 @@ def process_files(site: Site, input_file_name: str, output_file_name: str) -> No
 
             # SPECIAL CASE: NO INPUT FOR NIGHT.
             if night_df.empty:
-                # print(f'No data for {curr_date}... adding data.')
-
                 # Loop from pd_start_time to pd_end_time, inserting the worst conditions.
                 # TODO: Check to see what we should use for wind speed and direction.
                 while pd_curr_time < pd_end_time:
@@ -120,7 +192,6 @@ def process_files(site: Site, input_file_name: str, output_file_name: str) -> No
                 continue
 
             # *** REGULAR CASE: Some data for date. ***
-            # print(f'\n\nAdding data for {curr_date}...')
             prev_row = None
 
             # Fill in any missing data at beginning of night.
@@ -136,21 +207,24 @@ def process_files(site: Site, input_file_name: str, output_file_name: str) -> No
 
             # Iterate over the rows.
             for idx, curr_row in night_df.iterrows():
-                # Adjust the values in pd_row to be standardized.
-                curr_row[cc_band_col] = cc_band_to_float(curr_row[cc_band_col])
-                curr_row[iq_band_col] = (
-                    None
-                    if pd.isna(curr_row[iq_band_col])
-                    else curr_row[iq_band_col] / 100
-                )
+                curr_row[cc_band_col] = val_to_float(curr_row[cc_band_col])
+                curr_row[iq_band_col] = val_to_float(curr_row[iq_band_col])
+                if pd.isna(curr_row[wind_dir_col]) or pd.isna(curr_row[wind_speed_col]):
+                    logger.warning(f'Missing wind data for {site.name} {curr_row[time_stamp_col]}: '
+                                   f'speed={curr_row[wind_speed_col]}, dir={curr_row[wind_dir_col]}')
 
-                # These should never happen.
-                if pd.isna(curr_row[wind_dir_col]):
-                    logging.warning(f'Site {site.name} has no wind dir entry for {curr_row[time_stamp_col]}.')
-                    curr_row[wind_dir_col] = 0.0
-                if pd.isna(curr_row[wind_speed_col]):
-                    logging.warning(f'Site {site.name} has no wind speed entry for {curr_row[time_stamp_col]}.')
-                    curr_row[wind_speed_col] = 0.0
+                # Check for jumps. These are in the data sets and not caused by the scripts.
+                if prev_row is not None:
+                    cc_prev = prev_row[cc_band_col]
+                    cc_curr = curr_row[cc_band_col]
+                    # if prev_row is not None and abs(curr_row[cc_band_col] - prev_row[cc_band_col]) >= 0.5:
+                    if cc_curr is not None and cc_prev is not None and abs(cc_curr - cc_prev) >= 0.5:
+                        logger.warning(f'CC jump for {site.name} {curr_row[time_stamp_col]}: {cc_prev} to {cc_curr}')
+
+                    iq_prev = prev_row[iq_band_col]
+                    iq_curr = curr_row[iq_band_col]
+                    if iq_curr is not None and iq_prev is not None and abs(iq_curr - iq_prev) in {0.3, 0.65}:
+                        logger.warning(f'IQ jump for {site.name} {curr_row[time_stamp_col]}: {cc_prev} to {cc_curr}')
 
                 # Get the timestamp for the current row and determine if there is missing data.
                 pd_next_time = curr_row[time_stamp_col]
@@ -189,66 +263,18 @@ def process_files(site: Site, input_file_name: str, output_file_name: str) -> No
 
             data_by_night[curr_date] = night_rows
 
-            # Now we make two iterations over the night rows:
-            # The first is to check for blocks of no data in the IQ column and linearly interpolate.
-            # Check the first and last row to ensure data.
-            if pd.isna(night_rows[0][iq_band_col]):
-                night_rows[0][iq_band_col] = 1.0
-            if pd.isna(night_rows[-1][iq_band_col]):
-                night_rows[-1][iq_band_col] = 1.0
+            # Clean up the gaps for IQ and CC.
+            clean_gaps(night_rows, iq_band_col, ImageQuality)
+            clean_gaps(night_rows, cc_band_col, CloudCover)
+            clean_lerp_gaps(night_rows, wind_speed_col)
+            clean_lerp_gaps(night_rows, wind_dir_col)
 
-            prev_row = None
-            row_block = []
+            # Now iterate over the night blocks to make sure every entry has valid data.
             for curr_row in night_rows:
-                if prev_row is None:
-                    prev_row = curr_row
-                    continue
-
-                # If we have an na value, append to the row block for processing.
-                # Otherwise, process the row block and fill with the linear interpolation.
-                if pd.isna(curr_row[iq_band_col]):
-                    row_block.append(curr_row)
-                else:
-                    if len(row_block) > 0:
-                        # Perform the linear interpolation and fill in the values.
-                        iq_lerp = lerp_enum(ImageQuality, prev_row[iq_band_col], curr_row[iq_band_col], len(row_block))
-                        for iq_row, iq_value in zip(row_block, iq_lerp):
-                            iq_row[iq_band_col] = iq_value
-                        row_block = []
-                    prev_row = curr_row
-
-            # Repeat the same process for CC.
-            if pd.isna(night_rows[0][cc_band_col]):
-                night_rows[0][cc_band_col] = 1.0
-            if pd.isna(night_rows[-1][cc_band_col]):
-                night_rows[-1][cc_band_col] = 1.0
-
-            prev_row = None
-            row_block = []
-            for curr_row in night_rows:
-                if prev_row is None:
-                    prev_row = curr_row
-                    continue
-
-                # If we have an na value, append to the row block for processing.
-                # Otherwise, process the row block and fill with the linear interpolation.
-                if pd.isna(curr_row[cc_band_col]):
-                    row_block.append(curr_row)
-                else:
-                    if len(row_block) > 0:
-                        # Perform the linear interpolation and fill in the values.
-                        cc_lerp = lerp_enum(CloudCover, prev_row[cc_band_col], curr_row[cc_band_col], len(row_block))
-                        for cc_row, cc_value in zip(row_block, cc_lerp):
-                            cc_row[cc_band_col] = cc_value
-                        row_block = []
-                    prev_row = curr_row
-
-            # Now iterate over the night blocks and show the IQ and CC.
-            print(f'*** SITE: {site.name}, NIGHT: {curr_date} ***')
-            for curr_row in night_rows:
-                print(f'{curr_row[time_stamp_col]} -> IQ={curr_row[iq_band_col]}, CC={curr_row[cc_band_col]}')
                 assert(not pd.isna(curr_row[iq_band_col]))
                 assert(not pd.isna(curr_row[cc_band_col]))
+                assert(not pd.isna(curr_row[wind_dir_col]))
+                assert(not pd.isna(curr_row[wind_speed_col]))
 
         # Flatten the data back down to a table.
         flattened_data = []
