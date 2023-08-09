@@ -6,10 +6,9 @@ import os
 from copy import copy
 from enum import Enum
 import logging
-from tqdm import tqdm
 from typing import List, Optional, Type
 
-from astropy.time import Time
+from astropy.time import Time, TimeDelta
 from astropy import units as u
 import numpy as np
 import pandas as pd
@@ -26,6 +25,8 @@ handler.setFormatter(formatter)
 logger.addHandler(handler)
 logger.setLevel(logging.INFO)
 
+MINUTE: TimeDelta = TimeDelta(60, format='sec')
+
 
 def val_to_float(data: str | float) -> Optional[float]:
     """
@@ -40,15 +41,15 @@ def val_to_float(data: str | float) -> Optional[float]:
     if type(data) == str and "{" in data:
         s = eval(data)
         value = max(s) / 100
-        if len(s) > 1:
-            logger.warning(f'Collapsing CC {s} to {value}')
+        # if len(s) > 1:
+        #     logger.warning(f'Collapsing CC {s} to {value}')
         return value
 
     # Otherwise, it is a float, so return the value divided by 100.
     return float(data) / 100
 
 
-def clean_gaps(night_rows: List, column_name: str, enum: Type[Enum]) -> None:
+def clean_gaps(night_rows: List, column_name: str, enum: Optional[Type[Enum]] = None) -> None:
     """
     Given a set of rows and a column, collect all the na entries from the rows in that column.
     Then perform a discrete linear interpolation to fill them in.
@@ -72,38 +73,10 @@ def clean_gaps(night_rows: List, column_name: str, enum: Type[Enum]) -> None:
         else:
             if len(row_block) > 0:
                 # Perform the linear interpolation and fill in the values.
-                lerp_entries = lerp_enum(enum, prev_row[column_name], curr_row[column_name], len(row_block))
-                for row, value in zip(row_block, lerp_entries):
-                    row[column_name] = value
-                row_block = []
-            prev_row = curr_row
-
-
-def clean_lerp_gaps(night_rows: List, column_name: str) -> None:
-    """
-    Given a set of rows and a column, collect all the na entries from the rows in that column.
-    Then perform a discrete linear interpolation to fill them in.
-    """
-    if pd.isna(night_rows[0][column_name]):
-        night_rows[0][column_name] = 0.0
-    if pd.isna(night_rows[-1][column_name]):
-        night_rows[-1][column_name] = 0.0
-
-    prev_row = None
-    row_block = []
-    for curr_row in night_rows:
-        if prev_row is None:
-            prev_row = curr_row
-            continue
-
-        # If we have an na value, append to the row block for processing.
-        # Otherwise, process the row block and fill with the linear interpolation.
-        if pd.isna(curr_row[column_name]):
-            row_block.append(curr_row)
-        else:
-            if len(row_block) > 0:
-                # Perform the linear interpolation and fill in the values.
-                lerp_entries = lerp(prev_row[column_name], curr_row[column_name], len(row_block))
+                if enum is None:
+                    lerp_entries = lerp(prev_row[column_name], curr_row[column_name], len(row_block))
+                else:
+                    lerp_entries = lerp_enum(enum, prev_row[column_name], curr_row[column_name], len(row_block))
                 for row, value in zip(row_block, lerp_entries):
                     row[column_name] = value
                 row_block = []
@@ -158,7 +131,16 @@ def process_files(site: Site, input_file_name: str, output_file_name: str) -> No
         pd_minute = pd.Timedelta(minutes=1)
         pd_time_starts = pd.to_datetime(time_starts.isot, utc=True).to_numpy()
         pd_time_ends = pd.to_datetime(time_ends.isot, utc=True).to_numpy()
-        for night_idx, pd_time_info in tqdm(enumerate(zip(pd_time_starts, pd_time_ends))):
+        assert(len(pd_time_ends) == len(pd_time_ends))
+
+        time_slot_length = TimeDelta(1.0 * u.min)
+        time_slot_length_days = time_slot_length.to(u.day).value
+
+        # TODO: Does this really calculate the correct number of time slots? It seems we may sometimes be one short.
+        # TODO: This will impact the NightEvents in the Scheduler.
+        time_slots_per_night = ((time_ends.jd - time_starts.jd) / time_slot_length_days + 0.5).astype(int)
+
+        for night_idx, pd_time_info in enumerate(zip(pd_time_starts, pd_time_ends)):
             pd_start_time, pd_end_time = pd_time_info
 
             # Night date
@@ -187,8 +169,11 @@ def process_files(site: Site, input_file_name: str, output_file_name: str) -> No
 
                 # Loop to next night.
                 data_by_night[curr_date] = night_rows
-                # print(f'Time slots expected: {time_slots_per_night[night_idx]}, '
-                #       f'time slots filled: {len(data_by_night[curr_date])}')
+
+                if time_slots_per_night[night_idx] != len(data_by_night[curr_date]):
+                    logger.error(f'Site: {site}, Night: {curr_row}: Expected: {time_slots_per_night[night_idx]} '
+                                 f'Actual: {len(data_by_night[curr_date])} (fully generated)')
+
                 continue
 
             # *** REGULAR CASE: Some data for date. ***
@@ -261,20 +246,48 @@ def process_files(site: Site, input_file_name: str, output_file_name: str) -> No
                 night_rows.append(new_row)
                 pd_curr_time += pd_minute
 
-            data_by_night[curr_date] = night_rows
-
             # Clean up the gaps for IQ and CC.
             clean_gaps(night_rows, iq_band_col, ImageQuality)
             clean_gaps(night_rows, cc_band_col, CloudCover)
-            clean_lerp_gaps(night_rows, wind_speed_col)
-            clean_lerp_gaps(night_rows, wind_dir_col)
+            clean_gaps(night_rows, wind_speed_col)
+            clean_gaps(night_rows, wind_dir_col)
 
-            # Now iterate over the night blocks to make sure every entry has valid data.
+            # Now iterate over the night blocks to make sure every entry has valid data and that the entries are
+            # spaced one minute apart.
+            # TODO: We are having issues where the entries are spaced correctly, but one more row than expected is made.
+            prev_row = None
             for curr_row in night_rows:
+                if prev_row is not None:
+                    difference = curr_row[time_stamp_col] - prev_row[time_stamp_col]
+                    assert(difference == MINUTE)
                 assert(not pd.isna(curr_row[iq_band_col]))
                 assert(not pd.isna(curr_row[cc_band_col]))
                 assert(not pd.isna(curr_row[wind_dir_col]))
                 assert(not pd.isna(curr_row[wind_speed_col]))
+                prev_row = curr_row
+
+            data_by_night[curr_date] = night_rows
+
+            time_slot_difference = time_slots_per_night[night_idx] - len(night_rows)
+            if time_slot_difference:
+                # Get the expected values and convert to datetime to standardize.
+                first_expected = time_starts[night_idx]
+                first_expected.format = 'datetime'
+                last_expected = time_ends[night_idx]
+                last_expected.format = 'datetime'
+                expected_slots = int((last_expected.datetime - first_expected.datetime).total_seconds() / 60 + 1)
+
+                pd_first_actual = night_rows[0][time_stamp_col].to_pydatetime().replace(tzinfo=None)
+                pd_last_actual = night_rows[-1][time_stamp_col].to_pydatetime().replace(tzinfo=None)
+                first_actual = Time(pd_first_actual, scale='utc')
+                last_actual = Time(pd_last_actual, scale='utc')
+                actual_slots = int((last_actual.datetime - first_actual.datetime).total_seconds() / 60 + 1)
+
+                logger.warning(f'Site: {site}, Night: {curr_date}: Expected: {time_slots_per_night[night_idx]} '
+                               f'Actual: {len(data_by_night[curr_date])} (input), difference={time_slot_difference}\n'
+                               f'\tFirst expected: {first_expected}, last expected: {last_expected}\n'
+                               f'\tFirst actual:   {first_actual}, last actual:   {last_actual}\n'
+                               f'\tCalc expected time slots: {expected_slots}, Calc actual time slots: {actual_slots}')
 
         # Flatten the data back down to a table.
         flattened_data = []
@@ -285,7 +298,7 @@ def process_files(site: Site, input_file_name: str, output_file_name: str) -> No
         modified_df = pd.DataFrame(flattened_data)
         modified_df.to_pickle(output_file_name, compression="bz2")
 
-        print("Done.")
+        logger.info(f"*** Done processing site: {site.name} ***")
 
 
 def main():
