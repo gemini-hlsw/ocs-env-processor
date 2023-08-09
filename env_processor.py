@@ -41,8 +41,6 @@ def val_to_float(data: str | float) -> Optional[float]:
     if type(data) == str and "{" in data:
         s = eval(data)
         value = max(s) / 100
-        # if len(s) > 1:
-        #     logger.warning(f'Collapsing CC {s} to {value}')
         return value
 
     # Otherwise, it is a float, so return the value divided by 100.
@@ -77,6 +75,7 @@ def clean_gaps(night_rows: List, column_name: str, enum: Optional[Type[Enum]] = 
                     lerp_entries = lerp(prev_row[column_name], curr_row[column_name], len(row_block))
                 else:
                     lerp_entries = lerp_enum(enum, prev_row[column_name], curr_row[column_name], len(row_block))
+            
                 for row, value in zip(row_block, lerp_entries):
                     row[column_name] = value
                 row_block = []
