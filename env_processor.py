@@ -40,11 +40,6 @@ def val_to_float(data: str | float) -> Optional[float]:
     return float(data) / 100
 
 
-# def clean_gaps(night_rows: List,
-#                column_name: str,
-#                default_value: float,
-#                lerper: Callable[[float, float, int], float],
-#                enum: Optional[Type[Enum]] = None) -> None:
 def clean_gaps(night_rows: List,
                column_name: str,
                description: str,
@@ -83,50 +78,21 @@ def clean_gaps(night_rows: List,
 
 
 def enum_gaps(enum: Type[Enum]) -> Callable[[float, float, int], npt.NDArray[float]]:
+    """
+    Used to create a lerper over a binned enum value, i.e. CloudCover or ImagqQuality.
+    """
     def f(a: float, b: float, g: int) -> npt.NDArray[float]:
         return lerp_enum(enum, a, b, g)
     return f
 
 
 def continuous_gaps(lerp_func) -> Callable[[float, float, int], npt.NDArray[float]]:
+    """
+    Used to create a continuous lerper, i.e. wind speed or wind direction.
+    """
     def f(a: float, b: float, g: int) -> npt.NDArray[float]:
         return lerp_func(a, b, g)
     return f
-
-
-# def clean_gaps(night_rows: List, column_name: str, enum: Optional[Type[Enum]] = None) -> None:
-#     """
-#     Given a set of rows and a column, collect all the na entries from the rows in that column.
-#     Then perform a discrete linear interpolation to fill them in.
-#     """
-#     if pd.isna(night_rows[0][column_name]):
-#         night_rows[0][column_name] = 1.0
-#     if pd.isna(night_rows[-1][column_name]):
-#         night_rows[-1][column_name] = 1.0
-#
-#     prev_row = None
-#     row_block = []
-#     for curr_row in night_rows:
-#         if prev_row is None:
-#             prev_row = curr_row
-#             continue
-#
-#         # If we have a na value, append to the row block for processing.
-#         # Otherwise, process the row block and fill with the linear interpolation.
-#         if pd.isna(curr_row[column_name]):
-#             row_block.append(curr_row)
-#         else:
-#             if len(row_block) > 0:
-#                 # Perform the linear interpolation and fill in the values.
-#                 if enum is None:
-#                     lerp_entries = lerp(prev_row[column_name], curr_row[column_name], len(row_block))
-#                 else:
-#                     lerp_entries = lerp_enum(enum, prev_row[column_name], curr_row[column_name], len(row_block))
-#
-#                 for row, value in zip(row_block, lerp_entries):
-#                     row[column_name] = value
-#                 row_block = []
-#             prev_row = curr_row
 
 
 def process_files(site: Site, input_file_name: str, output_file_name: str) -> None:
@@ -258,7 +224,9 @@ def process_files(site: Site, input_file_name: str, output_file_name: str) -> No
                     if (iq_curr is not None and iq_prev is not None
                             and iq_curr != iq_prev
                             and {iq_curr, iq_prev} not in [{1.0, 0.85}, {0.85, 0.7}, {0.7, 0.2}]):
-                        print(f'\t* IQ jump from {prev_row[time_stamp_col]} to {curr_row[time_stamp_col]}: {iq_prev} to {iq_curr}')
+                        t1 = prev_row[time_stamp_col].strftime('%H:%M')
+                        t2 = curr_row[time_stamp_col].strftime('%H:%M')
+                        print(f'\t* IQ jump from {t1} to {t2}: {iq_prev} to {iq_curr}')
 
                     # Check for jumps of more than one bin in CloudCover.
                     cc_prev = prev_row[cc_band_col]
@@ -266,7 +234,9 @@ def process_files(site: Site, input_file_name: str, output_file_name: str) -> No
                     if (cc_curr is not None and cc_prev is not None
                             and cc_curr != cc_prev
                             and {cc_curr, cc_prev} not in [{1.0, 0.8}, {0.8, 0.7}, {0.7, 0.5}]):
-                        print(f'\t* CC jump for {prev_row[time_stamp_col]} {curr_row[time_stamp_col]}: {cc_prev} to {cc_curr}')
+                        t1 = prev_row[time_stamp_col].strftime('%H:%M')
+                        t2 = curr_row[time_stamp_col].strftime('%H:%M')
+                        print(f'\t* CC jump for {t1} to {t2}: {cc_prev} to {cc_curr}')
 
                 # Get the timestamp for the current row and determine if there is missing data.
                 pd_next_time = curr_row[time_stamp_col]
