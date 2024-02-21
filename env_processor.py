@@ -127,6 +127,10 @@ def process_files(site: Site, input_file_name: str, output_file_name: str) -> No
     with bz2.BZ2File(input_file_name, "rb") as input_file:
         df = pd.read_pickle(input_file)
 
+        # Convert raw values
+        df.raw_cc = df.raw_cc / 100
+        df.raw_iq = df.raw_iq / 100
+
         # Add timezone information to the time_stamp_col to get between to pass.
         df[time_stamp_col] = df[time_stamp_col].dt.tz_localize("UTC")
 
@@ -345,7 +349,7 @@ def main():
     )
     in_files = [
         os.path.join("data", f)
-        for f in ("gn_filtered.pickle.bz2", "gs_filtered.pickle.bz2",)
+        for f in ("gn_wfs_filled_final.pickle.bz2", "gs_wfs_filled_final.pickle.bz2",)
     ]
     out_files = [
         os.path.join("data", f)

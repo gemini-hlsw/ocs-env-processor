@@ -5,8 +5,8 @@ from datetime import datetime
 
 
 time_stamp_col = 'Time_Stamp_UTC'
-cc_band_col = 'cc_band'
-iq_band_col = 'iq_band'
+cc_band_col = 'raw_cc'
+iq_band_col = 'raw_iq'
 wind_speed_col = 'WindSpeed'
 wind_dir_col = 'WindDir'
 first_date = datetime(2018, 1, 31, 12, 0)
