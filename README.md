@@ -1,28 +1,41 @@
 # ocs-env-processor
 
+Project author: [Sebastian Raaphorst](https://www.github.com/sraaphorst), 2024-03-08.
+
 This consists of a pair of Python scripts to take the environmental data per site from
-the OCS, parse out the relevant dates and columns, and then ensure that
-an entry for every time slot for every date contains weather
-information.
+the OCS and process it for use with the [Gemini Automated Scheduler](https://www.github.com/gemini-hlsw/scheduler).
 
-* `filter_dates.py` takes the original pandas dataframe files and filters out irrelevant dates and columns.
-* `env_processor.py` takes the filtered pandas dataframe files and adds data missing for days or for gaps.
+* `filter_dates.py`:
+  * Takes the original data files and drops irrelevant rows (data that is not temporally relevant) and columns.
+  * Makes the UTC timestamp field timezone-aware and adds a local timestamp field that is also timezone-aware.
+* `env_processor.py`
+  * Uses the output from `filter_dates.py`.
+  * Ensures values for cloud cover, image quality, water vapor, and sky background are legal.
+  * Adds a night date field so that data from the same night can be easily queried.
+  * Traverses each night date group and removes entries where the IQ and CC do not change, thus leaving only entries
+    corresponding to a weather change event.
 
-###  If a night contains no information
+Note that the scripts must be run in the order listed above to create the intermediary files to result in the final
+files for consumption with the Gemini Automated Scheduler.
 
-The night is populated with the default worst weather information possible.
+### Input
 
-### If a night is missing entries at the beginning or end
+The input is a dataset per site:
 
-The missing entries are populated with the default worst weather information possible.
+* Gemini North: `gn_wfs_filled_final.pickle.bz2`
+* Gemini South: `gs_wfs_filled_final.pickle.bz2`
 
-### If a night is missing intermediate entries
-
-Linear interpolation is done between the existing entries to obtain
-weather data for the missing entries.
+created from the historical night data of the telescopes.
 
 ### Output
 
-The output is a new and complete dataset per site for the Scheduler in validation mode.
+The output is a dataset per site:
 
-This is a replacement for the [Scheduler OCS Env Service](https://github.com/gemini-hlsw/scheduler-ocs-env).
+* Gemini North: `gn_data.pickle.bz2`
+* Gemini South: `gs_data.pickle.bz2`
+
+for the Scheduler in validation mode.
+
+### Note
+
+This is a replacement for the now-defunct [Scheduler OCS Env Service](https://github.com/gemini-hlsw/scheduler-ocs-env).
